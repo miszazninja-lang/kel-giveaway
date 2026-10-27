@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Честный розыгрыш</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1c1a;--mute:#6b6862;--line:#e4e1da;--acc:#7a4dff;--ok:#1f8a4c;--bad:#c23b2a;--soft:#efeafe;--win:#f2b705;--s1:#d9d2ff;--s2:#c4b8ff}
+@media (prefers-color-scheme:dark){:root{--bg:#141317;--card:#1d1c22;--ink:#ecebef;--mute:#9a97a3;--line:#2e2c35;--acc:#a98bff;--ok:#4cc27e;--bad:#ff7a66;--soft:#2a2440;--win:#ffd54a;--s1:#2f2a48;--s2:#3b3460}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 48px}
+h1{font-size:22px;line-height:1.3;margin:6px 0 2px}
+h2{font-size:16px;margin:0 0 10px}
+.prize{font-size:18px;font-weight:600;margin:4px 0 2px;overflow-wrap:anywhere}
+.sub{color:var(--mute);margin:0 0 6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+.howlink{display:block;text-align:center;border:1px solid var(--acc);border-radius:10px;padding:10px;margin:12px 0;text-decoration:none}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;background:var(--soft);color:var(--acc);font-size:13px;font-weight:600}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}
+.facts div{background:var(--bg);border-radius:10px;padding:10px;min-width:0}
+.facts b{display:block;font-size:13px;color:var(--mute);font-weight:500}
+.facts span{overflow-wrap:anywhere}
+.big{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:26px;font-weight:700;text-align:center;
+  background:var(--bg);border-radius:10px;padding:14px 8px;overflow-wrap:anywhere}
+.winners{list-style:none;margin:0;padding:0}
+.winners li{font-size:20px;font-weight:700;margin:6px 0;overflow-wrap:anywhere}
+.winners li small{display:block;font-size:13px;font-weight:400;color:var(--mute)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.row2 div{background:var(--bg);border-radius:10px;padding:10px}
+.row2 b{display:block;font-size:13px;color:var(--mute);font-weight:500}
+.step{display:flex;gap:10px;align-items:flex-start;margin:8px 0}
+.ic{flex:0 0 22px;text-align:center}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;word-break:break-all}
+.kv{margin:8px 0}.kv b{display:block;font-size:13px;color:var(--mute);font-weight:500}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.mute{color:var(--mute)}
+.head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+button{font:inherit;border:0;border-radius:10px;padding:10px 14px;background:var(--acc);color:#fff;cursor:pointer;min-height:40px}
+button.ghost{background:transparent;color:var(--acc);border:1px solid var(--acc)}
+input{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);min-height:40px}
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{text-align:left;font-weight:500;color:var(--mute);padding:6px 4px;font-size:13px}
+td{padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
+tr.hit td{background:var(--soft)}
+tr.won td{font-weight:700}
+a{color:var(--acc)}
+.links a{margin-right:14px;display:inline-block}
+details summary{cursor:pointer;color:var(--acc);margin:4px 0}
+.viz{display:flex;justify-content:center}
+.viz svg{width:100%;max-width:340px;height:auto}
+.viz svg.bar{max-width:none}
+.cap{text-align:center;color:var(--mute);font-size:13px;margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <span id="badge" class="badge">загружаю…</span>
+  <h1>Детали розыгрыша</h1>
+  <div class="prize" id="prize"></div>
+  <p class="sub" id="where"></p>
+  <a class="howlink" href="#how">Как проверить честность самому</a>
+
+  <div class="card"><div class="facts" id="facts"></div></div>
+
+  <div class="card">
+    <div class="head">
+      <h2 style="margin:0">🔒 Проверка подлинности</h2>
+      <button id="verify" hidden>Проверить подпись</button>
+    </div>
+    <details id="proof">
+      <summary>Разверни блок, чтобы увидеть детали проверки</summary>
+      <div id="proofkv"></div>
+    </details>
+    <div id="checks"><p class="mute">Итог появится после конца приёма. Тогда эта страница сама пересчитает
+      победителей: возьмёт список отсюда, а случайное число — у drand напрямую, не у бота.</p></div>
+    <button id="recheck" class="ghost" hidden>Проверить ещё раз</button>
+  </div>
+
+  <div class="card">
+    <h2>🎲 Случайное число</h2>
+    <div class="big" id="rnd">—</div>
+    <p class="cap" id="rndcap">Это число выпустит сеть drand (League of Entropy) в раунде, объявленном при запуске.
+      Заранее его не знает никто — ни бот, ни организатор.</p>
+  </div>
+
+  <div class="card">
+    <h2 id="wintitle">🏆 Победитель</h2>
+    <ul class="winners" id="winners"><li class="mute" style="font-size:15px;font-weight:400">появится после итогов</li></ul>
+    <div class="row2"><div><b>Всего билетов</b><span id="tot">—</span></div><div><b>Победителей</b><span id="kk">—</span></div></div>
+    <p class="mute" id="excluded"></p>
+  </div>
+
+  <div class="card">
+    <h2>🎡 Визуальное представление</h2>
+    <div class="viz" id="viz"></div>
+    <p class="cap" id="vizcap"></p>
+  </div>
+
+  <div class="card">
+    <h2>👥 Участники <span class="mute" id="count"></span></h2>
+    <input id="find" placeholder="Найди себя: код билета из личных сообщений">
+    <div class="tablewrap"><table id="list"></table></div>
+    <p id="more" hidden><button id="showall" class="ghost">Показать всех</button></p>
+  </div>
+
+  <div class="card" id="how">
+    <h2>Как выбираются победители</h2>
+    <ol>
+      <li>Номер раунда drand объявлен в посте сразу при запуске. drand (League of Entropy: Cloudflare, Protocol Labs,
+        университеты) выпускает новое случайное число каждые 3 секунды, заранее его не знает никто.</li>
+      <li>В конце приёма бот публикует отпечаток SHA-256 списка участников. Это происходит до выхода раунда:
+        подогнать список под число нельзя.</li>
+      <li>Подписку бот проверяет у всех при закрытии, до отпечатка: кто не выполнил условие, в список не попадает.
+        После выхода числа никого не перепроверяют — выгнать неугодного победителя нельзя.</li>
+      <li>затравка = SHA256("kel-give-v1|id|отпечаток|число drand"); шаг i: SHA256("затравка|i") как число mod
+        (сколько билетов осталось) — индекс в оставшемся списке по номерам. Первые шаги — победители.</li>
+    </ol>
+    <p class="links" id="links"></p>
+  </div>
+</main>
+<script src="/give/verify.js"></script>
+<script>
+(function () {
+  "use strict";
+  var GID = "__GID__", data = null, showAll = false;
+  var SVG = "http://www.w3.org/2000/svg";
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); }
+  function when(ts) { return ts ? new Date(ts * 1000).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit"}) : "—"; }
+  // как у pointauc: точное время в UTC, рядом — своё местное
+  function utc(ts) { return ts ? new Date(ts * 1000).toISOString().replace("T", " ").replace(/\.\d+Z$/, "Z") + " (UTC)" : "—"; }
+  function chatName(c) { return c && c.username ? "@" + c.username : "«" + ((c && c.title) || "чат") + "»"; }
+  function pct(x) { return (Math.round(x * 10000) / 100).toLocaleString("ru-RU") + "%"; }
+  var STATE = {open: "Идёт приём", closing: "Закрываю приём — проверяю условия", closed: "Приём закрыт — ждём число drand", done: "Итоги подведены",
+               cancelled: "Отменён организатором"};
+
+  // билеты, из которых тянут: после закрытия — список (только выполнившие условие), до — все
+  function pool() {
+    var d = data;
+    if (d.list && window.KelGive) return window.KelGive.parseList(d.list).map(function (e) { return e[0]; }).sort(function (a, b) { return a - b; });
+    return d.entries.map(function (e) { return e[0]; }).sort(function (a, b) { return a - b; });
+  }
+
+  function render() {
+    var d = data;
+    $("badge").textContent = STATE[d.state] || d.state;
+    $("prize").textContent = "🎁 " + d.prize;
+    $("where").textContent = "Розыгрыш в " + chatName(d.chat);
+    var facts = [["ID розыгрыша", d.id], ["Создан", utc(d.created)], ["Приём до", utc(d.end)]];
+    if (d.closed_ts) facts.push(["Список зафиксирован", utc(d.close_msg_date || d.closed_ts)]);
+    facts.push(["Раунд drand", "№" + d.round + " · " + utc(d.round_time)]);
+    if (d.done_ts) facts.push(["Итоги подведены", utc(d.done_ts)]);
+    facts.push(["Условие", d.subs.length ? "подписка на " + d.subs.map(chatName).join(", ") : "нет"]);
+    $("facts").innerHTML = facts.map(function (f) { return "<div><b>" + esc(f[0]) + "</b><span" +
+      (f[0] === "ID розыгрыша" ? " class='mono'" : "") + ">" + esc(f[1]) + "</span></div>"; }).join("");
+
+    var kv = [["Схема", d.scheme], ["Отпечаток списка (SHA-256)", d.digest], ["Число drand (randomness)", d.randomness],
+              ["Подпись drand (BLS)", d.signature], ["Затравка", d.seed], ["Сеть drand (chain)", d.chain]];
+    $("proofkv").innerHTML = kv.filter(function (x) { return x[1]; }).map(function (x) {
+      return "<div class='kv'><b>" + esc(x[0]) + "</b><span class='mono'>" + esc(x[1]) + "</span></div>"; }).join("") +
+      "<p><a href='https://api.drand.sh/" + esc(d.chain) + "/public/" + d.round + "'>Число и подпись раунда №" + d.round +
+      " прямо у drand</a></p>";
+    $("verify").hidden = d.state !== "done";
+
+    if (d.randomness) {
+      var fr = parseInt(String(d.randomness).slice(0, 13), 16) / Math.pow(2, 52);
+      $("rnd").textContent = fr.toFixed(13);
+      $("rndcap").textContent = "Число drand раунда №" + d.round + " как дробь от 0 до 1 (" + pct(fr) + "). Его выпустила сеть drand " +
+        "(League of Entropy), заранее его не знал никто; из него и отпечатка списка считается затравка, а из затравки — победители.";
+    } else {
+      $("rnd").textContent = "—";
+      $("rndcap").textContent = "Выйдет в раунде №" + d.round + " (" + when(d.round_time) + "). Заранее его не знает никто — ни бот, ни организатор.";
+    }
+
+    var ws = d.state === "done" ? d.winners : [];
+    $("wintitle").textContent = ws.length > 1 ? "🏆 Победители" : "🏆 Победитель";
+    if (d.state === "done") {
+      $("winners").innerHTML = ws.length ? ws.map(function (w) {
+        return "<li>" + esc(w[2]) + "<small>билет №" + w[0] + " · код " + esc(w[1]) + "</small></li>"; }).join("")
+        : "<li class='mute' style='font-size:15px;font-weight:400'>победителей нет</li>";
+    }
+    var p = pool();
+    $("tot").textContent = p.length + (d.n !== p.length ? " (всего записалось " + d.n + ")" : "");
+    $("kk").textContent = d.k;
+    $("excluded").textContent = (d.excluded || []).length ? "Не выполнили условие при закрытии (в розыгрыше не участвуют): " + d.excluded.map(function (s) {
+      return "№" + s[0] + " (" + s[1] + ")"; }).join("; ") : "";
+    $("count").textContent = "· " + d.n;
+    renderList();
+    drawViz(null);
+    var links = ["<a href='/give/" + GID + ".txt'>список (.txt)</a>", "<a href='/give/" + GID + ".json'>все данные (.json)</a>",
+      "<a href='https://api.drand.sh/" + d.chain + "/public/" + d.round + "'>число drand №" + d.round + "</a>",
+      "<a href='/give/code'>код на этом сервере</a>"];
+    if (d.source) links.push("<a href='" + esc(d.source) + "'>открытый репозиторий</a>");
+    $("links").innerHTML = links.join("");
+    if (d.state === "done" && d.seed) firstStep();
+  }
+
+  function renderList() {
+    var d = data, q = $("find").value.trim().toLowerCase(), rows = d.entries, out = [], ex = {}, won = {};
+    (d.excluded || []).forEach(function (x) { ex[x[0]] = x[1]; });
+    (d.state === "done" ? d.winners : []).forEach(function (w) { won[w[0]] = 1; });
+    var p = pool(), chance = p.length ? Math.min(1, d.k / p.length) : 0;
+    var shown = q ? rows.filter(function (e) { return e[1].toLowerCase().indexOf(q) >= 0 || String(e[0]) === q; })
+                  : (showAll ? rows : rows.slice(0, 200));
+    shown.forEach(function (e) {
+      var cls = (q ? "hit " : "") + (won[e[0]] ? "won" : "");
+      out.push("<tr" + (cls.trim() ? " class='" + cls.trim() + "'" : "") + "><td>№" + e[0] + "</td><td>" + esc(e[2]) +
+               (won[e[0]] ? " 🏆" : "") + (ex[e[0]] ? " <span class='bad'>✖ " + esc(ex[e[0]]) + "</span>" : "") +
+               "</td><td class='mono'>" + esc(e[1]) + "</td><td>" + (ex[e[0]] ? "—" : pct(chance)) + "</td></tr>");
+    });
+    $("list").innerHTML = (out.length ? "<tr><th>№</th><th>Имя</th><th>Код</th><th>Шанс</th></tr>" : "") +
+      (out.join("") || "<tr><td class='mute'>" + (q ? "не нашла такой код" : "пока никого") + "</td></tr>");
+    $("more").hidden = !!q || showAll || rows.length <= 200;
+  }
+
+  function el(name, attrs) {
+    var e = document.createElementNS(SVG, name);
+    for (var k in attrs) if (Object.prototype.hasOwnProperty.call(attrs, k)) e.setAttribute(k, attrs[k]);
+    return e;
+  }
+
+  // круг из равных долей (≤ 60 билетов) или полоса; mark — индекс доли шага 1 в списке по номерам
+  function drawViz(mark) {
+    var d = data, p = pool(), box = $("viz"), won = {};
+    (d.state === "done" ? d.winners : []).forEach(function (w) { won[w[0]] = 1; });
+    box.textContent = "";
+    if (!p.length) { $("vizcap").textContent = "Пока ни одного билета."; return; }
+    var n = p.length, css = getComputedStyle(document.documentElement);
+    var c1 = css.getPropertyValue("--s1").trim(), c2 = css.getPropertyValue("--s2").trim(),
+        cw = css.getPropertyValue("--win").trim(), ca = css.getPropertyValue("--acc").trim(),
+        ci = css.getPropertyValue("--ink").trim(), cc = css.getPropertyValue("--card").trim();
+    if (n <= 60) {
+      var R = 140, s = el("svg", {viewBox: "-160 -170 320 330", role: "img", "aria-label": "Круг из " + n + " билетов"});
+      for (var i = 0; i < n; i++) {
+        var a0 = (i / n) * 2 * Math.PI - Math.PI / 2, a1 = ((i + 1) / n) * 2 * Math.PI - Math.PI / 2;
+        var fill = won[p[i]] ? cw : (i % 2 ? c2 : c1), seg;
+        if (n === 1) seg = el("circle", {cx: 0, cy: 0, r: R, fill: fill, stroke: cc, "stroke-width": 2});
+        else seg = el("path", {d: "M0 0 L" + (R * Math.cos(a0)).toFixed(2) + " " + (R * Math.sin(a0)).toFixed(2) +
+          " A" + R + " " + R + " 0 " + (a1 - a0 > Math.PI ? 1 : 0) + " 1 " + (R * Math.cos(a1)).toFixed(2) + " " +
+          (R * Math.sin(a1)).toFixed(2) + " Z", fill: fill, stroke: cc, "stroke-width": n > 30 ? 1 : 2});
+        s.appendChild(seg);
+        if (n <= 24) {
+          var am = (a0 + a1) / 2, lr = R * 0.72;
+          var t = el("text", {x: (lr * Math.cos(am)).toFixed(1), y: (lr * Math.sin(am)).toFixed(1), "text-anchor": "middle",
+            "dominant-baseline": "central", "font-size": n <= 12 ? 14 : 10, fill: won[p[i]] ? "#1d1c1a" : ci,
+            "font-weight": won[p[i]] ? 700 : 400});
+          t.textContent = p[i];
+          s.appendChild(t);
+        }
+      }
+      if (mark != null) {
+        var am2 = ((mark + 0.5) / n) * 2 * Math.PI - Math.PI / 2, tip = R + 4, base = R + 22, half = 0.09;
+        s.appendChild(el("line", {x1: 0, y1: 0, x2: (R * 0.5 * Math.cos(am2)).toFixed(1), y2: (R * 0.5 * Math.sin(am2)).toFixed(1),
+          stroke: ca, "stroke-width": 3, "stroke-linecap": "round"}));
+        s.appendChild(el("path", {d: "M" + (tip * Math.cos(am2)).toFixed(1) + " " + (tip * Math.sin(am2)).toFixed(1) +
+          " L" + (base * Math.cos(am2 - half)).toFixed(1) + " " + (base * Math.sin(am2 - half)).toFixed(1) +
+          " L" + (base * Math.cos(am2 + half)).toFixed(1) + " " + (base * Math.sin(am2 + half)).toFixed(1) + " Z", fill: ca}));
+      }
+      s.appendChild(el("circle", {cx: 0, cy: 0, r: 8, fill: ca}));
+      box.appendChild(s);
+    } else {
+      var W = 1000, H = 220, bw = W / n, b = el("svg", {viewBox: "0 -70 " + W + " " + (H + 70), "class": "bar",
+        role: "img", "aria-label": "Полоса из " + n + " билетов"});
+      for (var j = 0; j < n; j++) {
+        b.appendChild(el("rect", {x: (j * bw).toFixed(2), y: 0, width: Math.max(bw - (n > 300 ? 0 : 0.6), 0.3).toFixed(2),
+          height: H, fill: won[p[j]] ? cw : (j % 2 ? c2 : c1)}));
+      }
+      if (mark != null) {
+        var x = (mark + 0.5) * bw;
+        b.appendChild(el("path", {d: "M" + x.toFixed(1) + " -4 L" + (x - 26).toFixed(1) + " -64 L" + (x + 26).toFixed(1) + " -64 Z", fill: ca}));
+        b.appendChild(el("rect", {x: (x - 4).toFixed(1), y: 0, width: 8, height: H, fill: ca}));
+      }
+      box.appendChild(b);
+    }
+    if (mark == null) $("vizcap").textContent = n + " " + (n % 10 === 1 && n % 100 !== 11 ? "билет" : "билетов") +
+      " — у каждого равная доля. " + (d.state === "done" ? "Считаю, куда выпало…" : "Отметка появится после итогов.");
+  }
+
+  // шаг 1 формулы: x = SHA256("затравка|0") mod (сколько билетов) — индекс в списке по номерам; отметка ставится туда
+  async function firstStep() {
+    var d = data, p = pool(), K = window.KelGive;
+    if (!K || !p.length || !d.seed) return;
+    try {
+      var x = BigInt("0x" + (await K.sha256(d.seed + "|0")));
+      var i = Number(x % BigInt(p.length)), first = d.winners[0] ? d.winners[0][0] : null;
+      drawViz(i);
+      $("vizcap").innerHTML = "Шаг 1: SHA256(затравка|0) mod " + p.length + " = " + i + " → билет <b>№" + p[i] + "</b>" +
+        (first === p[i] ? " — <span class='ok'>это первый победитель ✅</span>" :
+          first != null ? " — <span class='bad'>не совпадает с объявленным №" + first + " ❌</span>" : "") +
+        (d.winners.length > 1 ? ". Остальные победители — следующие шаги той же формулы (подсвечены)." : ".");
+    } catch (e) { $("vizcap").textContent = "Браузер не смог посчитать шаг 1 (нужна поддержка BigInt)."; }
+  }
+
+  function line(ok, text) {
+    return "<div class='step'><span class='ic " + (ok ? "ok" : "bad") + "'>" + (ok ? "✅" : "❌") + "</span><div>" + text + "</div></div>";
+  }
+
+  async function check() {
+    var d = data, box = $("checks");
+    if (d.state !== "done" || !d.list) return;
+    box.innerHTML = "<p class='mute'>Пересчитываю: беру число у drand напрямую…</p>";
+    var out = [], K = window.KelGive;
+    var digest = await K.sha256(d.list);
+    out.push(line(digest === d.digest, "Отпечаток списка совпадает с тем, что бот опубликовал в чате при закрытии приёма (сверь с сообщением «Приём закрыт»)<br><span class='mono mute'>" + digest + "</span>"));
+    if (d.close_msg_date) out.push(line(d.close_msg_date < d.round_time,
+      "Список зафиксирован (" + when(d.close_msg_date) + ") раньше, чем вышло число drand (" + when(d.round_time) + ")"));
+    var b = await K.fetchBeacon(d.round);
+    if (!b) { out.push(line(false, "drand сейчас не отвечает — нажми «Проверить ещё раз» позже")); box.innerHTML = out.join(""); $("recheck").hidden = false; return; }
+    out.push(line(b.randomness === d.randomness, "Число drand раунда №" + d.round + " взято с " + esc(b.relay.replace("https://", "")) +
+      " и совпадает с тем, что использовал бот (число = SHA-256 подписи drand)<br><span class='mono mute'>" + b.randomness + "</span>"));
+    var steps = d.winners.length;
+    var v = await K.verify(d.id, d.list, b, steps);
+    out.push(line(v.seed === d.seed, "Затравка совпадает<br><span class='mono mute'>" + v.seed + "</span>"));
+    var mine = v.order;
+    var theirs = d.winners.map(function (w) { return w[0]; });
+    var same = mine.length === theirs.length && mine.every(function (n, i) { return n === theirs[i]; });
+    out.push(line(same, "Победители по формуле: " + (mine.map(function (n) { return "№" + n; }).join(", ") || "нет") +
+      (same ? " — те же, что объявил бот" : " — НЕ совпадают с объявленными")));
+    box.innerHTML = out.join("");
+    $("recheck").hidden = false;
+  }
+
+  async function load(first) {
+    try {
+      var r = await fetch("/give/" + GID + ".json", {cache: "no-store"});
+      if (!r.ok) { $("badge").textContent = "Розыгрыш не найден"; return; }
+      var prev = data && data.state;
+      data = await r.json();
+      render();
+      if (data.state === "done" && (first || prev !== "done")) check();
+      if (data.state === "open" || data.state === "closing" || data.state === "closed") setTimeout(load, 20000);
+    } catch (e) { $("badge").textContent = "Нет связи — обнови страницу"; }
+  }
+
+  $("find").addEventListener("input", function () { if (data) renderList(); });
+  $("showall").addEventListener("click", function () { showAll = true; renderList(); });
+  $("recheck").addEventListener("click", check);
+  $("verify").addEventListener("click", function () { $("proof").open = true; check(); $("checks").scrollIntoView({behavior: "smooth", block: "nearest"}); });
+  load(true);
+})();
+</script>
+</body>
+</html>
