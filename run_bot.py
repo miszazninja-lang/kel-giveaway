@@ -5,6 +5,7 @@
 BOT_TOKEN  — токен от @BotFather;
 PUBLIC_URL — адрес, по которому снаружи открывается этот сервер (на нём страница проверки /give/<id>);
 PORT       — порт страницы (по умолчанию 8080); GIVE_DB — файл базы (по умолчанию give.db).
+Форма настройки (/give/app) открывается кнопкой в личке бота, если PUBLIC_URL начинается с https://.
 Нужен только Python 3.8+, без библиотек. Бот работает через getUpdates — вебхук не нужен.
 """
 
@@ -80,6 +81,28 @@ class Page(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):   # форма настройки розыгрыша (/give/app): вход — подпись initData от Telegram
+        path = urllib.parse.urlparse(self.path).path
+        limit = 6 * 1024 * 1024 if path.endswith("/photo") else 32 * 1024   # фото приза из формы — base64
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > limit:
+                raise ValueError("too big")
+            body = json.loads(self.rfile.read(n).decode("utf-8") or "{}")
+        except Exception:  # noqa: BLE001
+            body = {}
+        con = db()
+        try:
+            r = kg.http_post(con, TOKEN, path, body)
+        finally:
+            con.close()
+        code, obj = r or (404, {"ok": False, "error": "Не найдено"})
+        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(raw)
 
     def log_message(self, *a):
         pass

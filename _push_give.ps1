@@ -6,7 +6,7 @@ $root = $PSScriptRoot
 $src = [IO.Path]::GetFullPath((Join-Path $root '..\сенку\senkuro_mcp'))
 $repoUrl = 'https://github.com/miszazninja-lang/kel-giveaway.git'
 
-foreach ($f in @('give_core.py', 'kel_give.py', 'give_verify.js', 'give_page.html')) {
+foreach ($f in @('give_core.py', 'kel_give.py', 'give_verify.js', 'give_page.html', 'give_app.html', 'give_list.html')) {
   Copy-Item -LiteralPath (Join-Path $src $f) -Destination (Join-Path $root $f) -Force
 }
 $py = Join-Path $src '.venv\Scripts\python.exe'
