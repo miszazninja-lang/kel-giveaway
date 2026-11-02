@@ -149,9 +149,14 @@ details summary{cursor:pointer;color:var(--acc);margin:4px 0}
     $("badge").textContent = STATE[d.state] || d.state;
     $("prize").textContent = "🎁 " + d.prize;
     $("where").textContent = "Розыгрыш в " + chatName(d.chat);
-    var facts = [["ID розыгрыша", d.id], ["Создан", utc(d.created)], ["Приём до", utc(d.end)]];
+    // итоги по числу участников: раунд назначается в момент закрытия приёма, до того он — заготовка
+    var pend = d.goal && d.state === "open";
+    var facts = [["ID розыгрыша", d.id], ["Создан", utc(d.created)],
+      ["Приём до", pend ? "пока не наберётся " + d.goal + " участников, не позже " + utc(d.end) : utc(d.end)]];
     if (d.closed_ts) facts.push(["Список зафиксирован", utc(d.close_msg_date || d.closed_ts)]);
-    facts.push(["Раунд drand", "№" + d.round + " · " + utc(d.round_time)]);
+    facts.push(["Раунд drand", pend ? "назначу в момент закрытия приёма" : "№" + d.round + " · " + utc(d.round_time)]);
+    if (d.round_moved_from) facts.push(["Раунд перенесён", "с №" + d.round_moved_from +
+      " — приём закрылся раньше срока, раунд назначен после закрытия"]);
     if (d.done_ts) facts.push(["Итоги подведены", utc(d.done_ts)]);
     facts.push(["Условие", d.subs.length ? "подписка на " + d.subs.map(chatName).join(", ") : "нет"]);
     $("facts").innerHTML = facts.map(function (f) { return "<div><b>" + esc(f[0]) + "</b><span" +
@@ -161,8 +166,8 @@ details summary{cursor:pointer;color:var(--acc);margin:4px 0}
               ["Подпись drand (BLS)", d.signature], ["Затравка", d.seed], ["Сеть drand (chain)", d.chain]];
     $("proofkv").innerHTML = kv.filter(function (x) { return x[1]; }).map(function (x) {
       return "<div class='kv'><b>" + esc(x[0]) + "</b><span class='mono'>" + esc(x[1]) + "</span></div>"; }).join("") +
-      "<p><a href='https://api.drand.sh/" + esc(d.chain) + "/public/" + d.round + "'>Число и подпись раунда №" + d.round +
-      " прямо у drand</a></p>";
+      (pend ? "" : "<p><a href='https://api.drand.sh/" + esc(d.chain) + "/public/" + d.round + "'>Число и подпись раунда №" + d.round +
+      " прямо у drand</a></p>");
     $("verify").hidden = d.state !== "done";
 
     if (d.randomness) {
@@ -172,7 +177,9 @@ details summary{cursor:pointer;color:var(--acc);margin:4px 0}
         "(League of Entropy), заранее его не знал никто; из него и отпечатка списка считается затравка, а из затравки — победители.";
     } else {
       $("rnd").textContent = "—";
-      $("rndcap").textContent = "Выйдет в раунде №" + d.round + " (" + when(d.round_time) + "). Заранее его не знает никто — ни бот, ни организатор.";
+      $("rndcap").textContent = pend ? "Раунд drand назначу в момент закрытия приёма — когда наберётся " + d.goal +
+        " участников. Число выйдет уже после закрытия; заранее его не знает никто — ни бот, ни организатор." :
+        "Выйдет в раунде №" + d.round + " (" + when(d.round_time) + "). Заранее его не знает никто — ни бот, ни организатор.";
     }
 
     var ws = d.state === "done" ? d.winners : [];
@@ -190,9 +197,9 @@ details summary{cursor:pointer;color:var(--acc);margin:4px 0}
     $("count").textContent = "· " + d.n;
     renderList();
     drawViz(null);
-    var links = ["<a href='/give/" + GID + ".txt'>список (.txt)</a>", "<a href='/give/" + GID + ".json'>все данные (.json)</a>",
-      "<a href='https://api.drand.sh/" + d.chain + "/public/" + d.round + "'>число drand №" + d.round + "</a>",
-      "<a href='/give/code'>код на этом сервере</a>"];
+    var links = ["<a href='/give/" + GID + ".txt'>список (.txt)</a>", "<a href='/give/" + GID + ".json'>все данные (.json)</a>"];
+    if (!pend) links.push("<a href='https://api.drand.sh/" + d.chain + "/public/" + d.round + "'>число drand №" + d.round + "</a>");
+    links.push("<a href='/give/code'>код на этом сервере</a>");
     if (d.source) links.push("<a href='" + esc(d.source) + "'>открытый репозиторий</a>");
     $("links").innerHTML = links.join("");
     if (d.state === "done" && d.seed) firstStep();

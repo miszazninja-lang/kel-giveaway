@@ -30,11 +30,19 @@ MSK = 3 * 3600               # время в постах — по Москве 
 DUR_MIN, DUR_MAX = 5 * 60, 30 * 86400
 WIN_MAX = 100
 PRIZE_MAX = 300
+# 02.11.2026, владелец прислал примеры чужих розыгрышей (свой текст с местами и ссылками, «итоги, когда будет 130
+# участников»): свой текст поста, итоги по числу участников, «перешли пост — сделаю такой же».
+DESC_MAX = 700               # свой текст поста (с картинкой подпись ≤1024 вместе с нашим блоком — иначе текстом)
+TITLE_MAX = 120              # название в итогах и личках — первая строка своего текста
+GOAL_MAX = 5_000             # «итоги, когда наберётся N участников»
+GOAL_DUR = 7 * 86400         # …но не позже, чем через столько
+GIVE_HINT_RE = re.compile(r"розыгр|конкурс|giveaway|\bприз(?:ы|а|у|е|ом|ами|ах|ов\w*)?\b", re.I)  # не «призрак/призыв»
 SUBS_MAX = 5                 # каналов-условий
 ACTIVE_MAX = 20              # идущих розыгрышей у одного создателя (защита сервера от спама)
 SHOWN_EVERY = 30             # счётчик на кнопке поста — не чаще (лимит правок Telegram)
 COMPACT_AFTER = 30 * 86400   # старые итоги: убрать tg id и имена, список и проверка остаются
 TICK_SEC = 15
+TEST_UID_MIN = 9_000_000_000_000   # тестовые id хозяина (у Кель — «режим новичка»): билета не даём
 _LOCK = threading.RLock()
 _HERE = Path(__file__).resolve().parent
 
@@ -107,6 +115,13 @@ def _all(con) -> list:
     return out
 
 
+def open_now(con) -> list:
+    """Идущие розыгрыши (приём открыт), ближайшие итоги — первыми. Хозяин сам решает, какие показать у себя."""
+    now = H.now()
+    return sorted((g for g in _all(con) if g.get("state") == "open" and now < float(g.get("end") or 0)),
+                  key=lambda g: g["end"])
+
+
 # ---------- Telegram ----------
 def _api(token, method, **p) -> dict:
     try:
@@ -126,6 +141,36 @@ def _send(token, chat, text, kb=None, html_mode=False, reply_to=None, preview=Fa
     if not preview:
         p["link_preview_options"] = json.dumps({"is_disabled": True})
     return _api(token, "sendMessage", **p)
+
+
+_MEDIA_API = {"photo": ("sendPhoto", "photo"), "animation": ("sendAnimation", "animation"),
+              "video": ("sendVideo", "video")}
+CAPTION_MAX = 1024           # подпись к фото/видео у Telegram
+
+
+def _media_of(msg: dict):
+    """Фото (самое крупное), гифка или видео из сообщения организатора — {t, id} или None."""
+    if msg.get("photo"):
+        return {"t": "photo", "id": msg["photo"][-1]["file_id"]}
+    for t in ("animation", "video"):              # у гифки есть и document — она проверяется первой
+        if isinstance(msg.get(t), dict) and msg[t].get("file_id"):
+            return {"t": t, "id": msg[t]["file_id"]}
+    return None
+
+
+def _send_post(token, chat, text, media, kb=None) -> dict:
+    """Пост розыгрыша (02.11.2026, владелец: «приз — фоткой и т. д., как в чатах выглядят розыгрыши»): с картинкой
+    организатора — подписью к ней, без картинки, с длинным текстом (подпись — до 1024 знаков, а номер раунда drand
+    резать нельзя) или если Telegram её не принял — обычным текстом. У поста с картинкой в ответе r["_media"]."""
+    how = _MEDIA_API.get((media or {}).get("t")) if isinstance(media, dict) else None
+    if how and media.get("id") and len(text) <= CAPTION_MAX:
+        p = {"chat_id": chat, how[1]: media["id"], "caption": text}
+        if kb:
+            p["reply_markup"] = json.dumps(kb, ensure_ascii=False)
+        r = _api(token, how[0], **p)
+        if r.get("ok"):
+            return {**r, "_media": True}
+    return _send(token, chat, text, kb)
 
 
 def _answer(token, cb, text="", alert=False) -> None:
@@ -217,14 +262,27 @@ def _who(u: dict) -> str:
     return (name or u.get("username") or "Участник")[:64]
 
 
+def _end_text(g: dict) -> str:
+    if g.get("goal_hit"):
+        return "скоро — набралось нужное число участников"
+    if g.get("goal"):
+        return f"когда наберётся {g['goal']} участников (не позже {_when(g['end'])})"
+    return _when(g["end"])
+
+
 def post_text(g: dict) -> str:
+    if g.get("goal"):          # раунд назначится при закрытии приёма (_close переносит его, как при досрочном)
+        honest = ("🔒 Честно: победителей выберет публичное случайное число drand — раунд назначу в момент закрытия "
+                  "приёма. Заранее его не знает никто, даже я. Пересчитать итог может любой — кнопка «Проверить».")
+    else:
+        honest = (f"🔒 Честно: победителей выберет публичное случайное число drand (раунд №{g['round']}). "
+                  "Заранее его не знает никто, даже я. Пересчитать итог может любой — кнопка «Проверить».")
+    tail = [f"✅ Условие: {_cond_text(g.get('subs') or [])}", "", honest, f"Розыгрыши без подкрутки — @{H.username}"]
+    if g.get("desc"):          # свой текст организатора, как у ботов розыгрышей, и под ним короткий наш блок
+        return "\n".join([g["desc"], "", f"🏆 Победителей: {g['k']} · ⏰ Итоги: {_end_text(g)}"] + tail)
     lines = [f"🎁 Розыгрыш: {g['prize']}", "",
              f"🏆 Победителей: {g['k']}",
-             f"⏰ Итоги: {_when(g['end'])}",
-             f"✅ Условие: {_cond_text(g.get('subs') or [])}", "",
-             f"🔒 Честно: победителей выберет публичное случайное число drand (раунд №{g['round']}). "
-             "Заранее его не знает никто, даже я. Пересчитать итог может любой — кнопка «Проверить».",
-             f"Розыгрыши без подкрутки — @{H.username}"]
+             f"⏰ Итоги: {_end_text(g)}"] + tail
     return "\n".join(lines)
 
 
@@ -316,19 +374,19 @@ def _menu(con, token, uid, chat) -> None:
     for g in mine[:10]:
         n = len(g.get("entries") or [])
         lines.append(f"• {g['prize'][:60]} — {_chat_name(g['chat'])}, участников {n}, "
-                     + (f"итоги {_when(g['end'])}" if g["state"] == "open" else "считаю итог"))
+                     + (f"итоги {_end_text(g)}" if g["state"] == "open" else "считаю итог"))
         if g["state"] == "open":
             rows.append([_btn("⏹ Закрыть приём сейчас", f"close:{g['id']}"), _btn("❌ Отменить", f"cancel:{g['id']}")])
     rows.append([_btn("➕ Новый розыгрыш", "new")])
     _send(token, chat, "\n".join(lines), {"inline_keyboard": rows})
 
 
-def _new(con, token, uid, chat) -> None:
+def _new(con, token, uid, chat, pre=None) -> None:
     active = sum(1 for g in _all(con) if g.get("owner") == uid and g.get("state") in ("open", "closed"))
     if active >= ACTIVE_MAX:
         _send(token, chat, f"У тебя уже {active} идущих розыгрышей — дождись итогов одного из них 🙂")
         return
-    _draft_put(con, uid, {"step": "chat"})
+    _draft_put(con, uid, {"step": "chat", **({"pre": pre} if isinstance(pre, dict) else {})})
     _send(token, chat,
           "🎁 Честный розыгрыш — бесплатно и для всех.\n\n"
           "1. Добавь меня админом в свой канал (право «Публикация сообщений») или в группу.\n"
@@ -370,10 +428,22 @@ def _set_chat(con, token, uid, chat, d, ref, extra=False) -> None:
         _send(token, chat, f"Меня нет в {_chat_name(info)} или нет права публиковать. Добавь меня админом "
                            "(«Публикация сообщений») и выбери снова.", _pick_kb(1))
         return
+    pre = d.pop("pre", None)
     d.update(chat=info, step="prize", subs=[info])
+    if isinstance(pre, dict):
+        if isinstance(pre.get("media"), dict):
+            d["media"] = pre["media"]
+        _send(token, chat, f"Розыгрыш будет в {_chat_name(info)}. Картинку и текст беру из пересланного поста.",
+              _NO_KB)
+        _take_prize(con, token, uid, chat, d, pre.get("text") or "")
+        return
     _draft_put(con, uid, d)
     _send(token, chat, f"Розыгрыш будет в {_chat_name(info)}.\n\nЧто разыгрываем? Напиши приз одним сообщением "
-                       "(например: «Карта ранга S» или «3 пака»).", _NO_KB)
+                       "(например: «Карта ранга S» или «3 пака»).\n"
+                       "Можно фото, гифкой или видео с подписью — пост будет с картинкой, как у ботов розыгрышей. "
+                       "Можно и свой текст на несколько строк — места, ссылки, условия своими словами: я добавлю "
+                       "под ним кнопку участия и строчку про честный итог.",
+          _NO_KB)
 
 
 def _ask_k(token, chat) -> None:
@@ -384,8 +454,46 @@ def _ask_k(token, chat) -> None:
 def _ask_time(token, chat) -> None:
     opts = [("1 ч", 3600), ("3 ч", 3 * 3600), ("12 ч", 12 * 3600), ("1 день", 86400), ("3 дня", 3 * 86400),
             ("7 дней", 7 * 86400)]
-    _send(token, chat, "Когда подвести итоги? Нажми или напиши: «45 мин», «2 ч», «5 дней».",
-          {"inline_keyboard": [[_btn(t, f"t:{s}") for t, s in opts[:3]], [_btn(t, f"t:{s}") for t, s in opts[3:]]]})
+    _send(token, chat, "Когда подвести итоги? Нажми или напиши: «45 мин», «2 ч», «5 дней» — или «130 участников»: "
+                       "тогда итог будет, как только столько наберётся.",
+          {"inline_keyboard": [[_btn(t, f"t:{s}") for t, s in opts[:3]], [_btn(t, f"t:{s}") for t, s in opts[3:]],
+                               [_btn("👥 Когда наберётся N участников", "t:goal")]]})
+
+
+def _ask_goal(token, chat) -> None:
+    _send(token, chat, f"Сколько участников нужно? Напиши число — например, 130. Приём закроется, как только столько "
+                       f"наберётся, но не позже чем через {GOAL_DUR // 86400} дней.")
+
+
+def _set_goal(con, token, uid, chat, d, n: int) -> None:
+    d.update(goal=n, dur=GOAL_DUR, step="subs")
+    _draft_put(con, uid, d)
+    _subs_screen(token, chat, d)
+
+
+def _take_prize(con, token, uid, chat, d, text: str) -> None:
+    """Приз одной строкой — как раньше; текст на несколько строк (или длиннее PRIZE_MAX) — свой текст поста (desc),
+    название для итогов и личек — его первая строка."""
+    raw = str(text or "").replace("\r", "")
+    rows = [re.sub(r"[ \t]+", " ", x).strip() for x in raw.split("\n")]
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(rows)).strip()
+    if not body:
+        _draft_put(con, uid, d)
+        _send(token, chat, ("Картинка есть 👍 " if d.get("media") else "") + "Теперь напиши, что разыгрываем, — "
+                                                                             "одним сообщением.")
+        return
+    if "\n" in body or len(body) > PRIZE_MAX:
+        if len(body) > DESC_MAX:
+            _draft_put(con, uid, d)            # картинка, если была, остаётся
+            _send(token, chat, f"Текст длинноват: {len(body)} знаков, в пост влезает до {DESC_MAX} (ещё место нужно "
+                               "под кнопку участия и строчку про честность). Сократи и пришли снова.")
+            return
+        d.update(desc=body, prize=next(x for x in rows if x)[:TITLE_MAX], step="k")
+    else:
+        d.pop("desc", None)
+        d.update(prize=re.sub(r"\s+", " ", body)[:PRIZE_MAX], step="k")
+    _draft_put(con, uid, d)
+    _ask_k(token, chat)
 
 
 def _subs_screen(token, chat, d) -> None:
@@ -408,9 +516,16 @@ def _confirm(con, token, uid, chat, d) -> None:
     _draft_put(con, uid, d)
     end = H.now() + d["dur"]
     fake = {"prize": d["prize"], "k": d["k"], "end": end, "subs": d.get("subs") or [],
-            "round": core.round_at(end + core.ROUND_DELAY)}
-    _send(token, chat, "Так будет выглядеть пост:\n\n" + post_text(fake),
-          {"inline_keyboard": [[_btn("🚀 Опубликовать", "pub"), _btn("✖️ Отмена", "x")]]})
+            "round": core.round_at(end + core.ROUND_DELAY), "desc": d.get("desc"), "goal": d.get("goal")}
+    kb = {"inline_keyboard": [[_btn("🚀 Опубликовать", "pub"), _btn("✖️ Отмена", "x")]]}
+    if d.get("media"):
+        long_ = len(post_text(fake)) > CAPTION_MAX
+        _send(token, chat, "Так будет выглядеть пост 👇" + (
+            f"\n⚠️ С картинкой Telegram пускает до {CAPTION_MAX} знаков подписи, а тут {len(post_text(fake))} — "
+            "пост выйдет текстом без картинки. Хочешь с картинкой — «✖️ Отмена» и текст покороче." if long_ else ""))
+        _send_post(token, chat, post_text(fake), d["media"], kb)
+    else:
+        _send(token, chat, "Так будет выглядеть пост:\n\n" + post_text(fake), kb)
 
 
 def _publish(con, token, uid, chat, d, frm) -> None:
@@ -429,7 +544,13 @@ def _publish(con, token, uid, chat, d, frm) -> None:
          "chat": d["chat"], "prize": d["prize"], "k": int(d["k"]), "subs": d.get("subs") or [],
          "created": now, "end": end, "round": core.round_at(end + core.ROUND_DELAY),
          "state": "open", "entries": [], "shown": 0, "shown_ts": 0}
-    r = _send(token, g["chat"]["id"], post_text(g), _post_kb(g))
+    if d.get("desc"):
+        g["desc"] = str(d["desc"])[:DESC_MAX]
+    if d.get("goal"):
+        g["goal"] = max(2, min(GOAL_MAX, int(d["goal"])))
+    if isinstance(d.get("media"), dict):
+        g["media"] = d["media"]
+    r = _send_post(token, g["chat"]["id"], post_text(g), g.get("media"), _post_kb(g))
     if not r.get("ok"):
         d["step"] = "confirm"
         _draft_put(con, uid, d)
@@ -437,18 +558,21 @@ def _publish(con, token, uid, chat, d, frm) -> None:
               + ". Проверь мои права в чате и нажми «Опубликовать» ещё раз.")
         return
     g["msg"] = (r.get("result") or {}).get("message_id")
+    if r.get("_media"):
+        g["media_post"] = 1
     with _LOCK:
         _save(con, g)
     H.kv_del(con, DRAFT + str(uid))
     _send(token, chat, f"Готово ✅ Розыгрыш опубликован в {_chat_name(g['chat'])}.\n"
-                       f"Итоги подведу сама: {_when(end)} (через {_left(end - now)}). Список и проверка: "
+                       + (f"Итоги подведу сама, {_end_text(g)}." if g.get("goal") else
+                          f"Итоги подведу сама: {_when(end)} (через {_left(end - now)}).") + " Список и проверка: "
                        f"{_verify_url(gid)}\nУправлять: /give", preview=False)
 
 
 def _on_text(con, token, uid, chat, d, msg) -> bool:
     text = (msg.get("text") or "").strip()
     step = d.get("step")
-    if text.lower() in ("✖️ отмена", "отмена", "/cancel"):
+    if (text or (msg.get("caption") or "").strip()).lower() in ("✖️ отмена", "отмена", "/cancel"):
         H.kv_del(con, DRAFT + str(uid))
         _send(token, chat, "Отменила черновик. Новый — /give", _NO_KB)
         return True
@@ -462,13 +586,25 @@ def _on_text(con, token, uid, chat, d, msg) -> bool:
             return True
         _set_chat(con, token, uid, chat, d, ref, extra=step == "sub_add")
         return True
+    media = _media_of(msg) if step == "prize" else None
+    if media:
+        d["media"] = media
+        text = (msg.get("caption") or "").strip()
+        if not text:
+            _draft_put(con, uid, d)
+            _send(token, chat, "Картинка есть 👍 Теперь напиши, что разыгрываем, — одним сообщением.")
+            return True
     if not text or text.startswith("/") or text.lower().startswith("кель "):
         return False
     if step == "prize":
-        prize = re.sub(r"\s+", " ", text).strip()[:PRIZE_MAX]
-        d.update(prize=prize, step="k")
-        _draft_put(con, uid, d)
-        _ask_k(token, chat)
+        _take_prize(con, token, uid, chat, d, text)
+        return True
+    if step == "goal":
+        m = re.fullmatch(r"(\d{1,6})(?:\s*(?:участ\w*|чел\w*))?", text, re.I)
+        if not m or not 2 <= int(m.group(1)) <= GOAL_MAX:
+            _send(token, chat, f"Напиши число участников — от 2 до {GOAL_MAX}.")
+            return True
+        _set_goal(con, token, uid, chat, d, int(m.group(1)))
         return True
     if step == "k":
         m = re.fullmatch(r"\d{1,3}", text)
@@ -480,6 +616,11 @@ def _on_text(con, token, uid, chat, d, msg) -> bool:
         _ask_time(token, chat)
         return True
     if step == "time":
+        m = re.fullmatch(r"(\d{1,6})\s*(?:участ\w*|чел\w*)", text, re.I)
+        if m and 2 <= int(m.group(1)) <= GOAL_MAX:
+            _set_goal(con, token, uid, chat, d, int(m.group(1)))
+            return True
+        d.pop("goal", None)
         dur = parse_duration(text)
         if not dur:
             _send(token, chat, "Не поняла срок. Например: «45 мин», «2 ч», «3 дня».")
@@ -494,6 +635,9 @@ def _on_text(con, token, uid, chat, d, msg) -> bool:
 # ---------- участие ----------
 def _join(con, token, frm, chat, gid) -> None:
     uid = frm.get("id")
+    if int(uid or 0) >= TEST_UID_MIN:
+        _send(token, chat, "Это тестовый вход — в розыгрышах участвуют только настоящие аккаунты 🙂")
+        return
     g = _load(con, gid)
     if not g:
         _send(token, chat, "Такого розыгрыша нет 🤔")
@@ -503,7 +647,7 @@ def _join(con, token, frm, chat, gid) -> None:
     kb = {"inline_keyboard": [[_url("🔍 Список и проверка", _verify_url(gid))]]}
     if mine:
         _send(token, chat, f"Ты уже участвуешь в «{g['prize']}»: билет №{mine[0]}, код {mine[1]}.\n"
-                           f"Итоги: {_when(g['end'])}.", kb)
+                           f"Итоги: {_end_text(g)}.", kb)
         return
     if g.get("state") != "open" or now >= g["end"]:
         _send(token, chat, f"Приём в «{g['prize']}» уже закрыт.", kb)
@@ -534,10 +678,14 @@ def _join(con, token, frm, chat, gid) -> None:
             mine = [len(g["entries"]) + 1, secrets.token_hex(3), uid, _who(frm), int(H.now()),
                     frm.get("username") or ""]
             g["entries"].append(mine)
+            if g.get("goal") and len(g["entries"]) >= g["goal"]:
+                g["end"] = int(H.now())          # набралось — тик закроет приём и назначит раунд drand
+                g["closed_early"] = g["goal_hit"] = 1
             _save(con, g)
     text = (f"✅ Ты участвуешь в розыгрыше «{g['prize']}»!\n"
             f"🎟 Билет №{mine[0]} · код {mine[1]} — по коду найдёшь себя в открытом списке.\n"
-            f"⏰ Итоги: {_when(g['end'])}. Если выиграешь — напишу сюда.")
+            f"⏰ Итоги: {_end_text(g)}. "
+            "Если выиграешь — напишу сюда.")
     if H.promo:
         text += "\n\n" + H.promo
     _send(token, chat, text, kb)
@@ -554,7 +702,7 @@ def on_message(con, token, msg) -> bool:
         return False
     chat = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
-    if _TOKENISH.search(text):
+    if _TOKENISH.search(text) or _TOKENISH.search(msg.get("caption") or ""):   # токен подписью к фото — тоже не приз
         return False
     m = JOIN_RE.fullmatch(text)
     if m:
@@ -564,9 +712,28 @@ def on_message(con, token, msg) -> bool:
         _menu(con, token, uid, chat)
         return True
     d = _draft(con, uid)
+    if not d or d.get("step") == "offer":
+        pre = _fwd_giveaway(msg)
+        if pre:
+            _draft_put(con, uid, {"step": "offer", "pre": pre})
+            _send(token, chat, "Похоже на пост розыгрыша 🙂 Сделать такой же у себя? Возьму картинку и текст, добавлю "
+                               "кнопку участия и честный итог по числу drand — подкрутить нельзя.",
+                  {"inline_keyboard": [[_btn("🎁 Сделать такой", "fw"), _btn("Не надо", "x")]]})
+            return True
     if not d:
         return False
     return _on_text(con, token, uid, chat, d, msg)
+
+
+def _fwd_giveaway(msg: dict):
+    """Пересланный пост розыгрыша (чужого бота или свой) → заготовка {media, text} или None."""
+    if not (msg.get("forward_origin") or msg.get("forward_from_chat") or msg.get("forward_from")
+            or msg.get("forward_sender_name")):
+        return None
+    text = str(msg.get("caption") or msg.get("text") or "")
+    if not GIVE_HINT_RE.search(text) or (H.username and f"@{H.username}".lower() in text.lower()):
+        return None                              # не розыгрыш — или наш же пост
+    return {"media": _media_of(msg), "text": text[:4096]}
 
 
 def on_callback(con, token, cb) -> bool:
@@ -602,7 +769,12 @@ def on_callback(con, token, cb) -> bool:
         d.update(k=max(1, min(WIN_MAX, int(arg[0]))), step="time")
         _draft_put(con, uid, d)
         _ask_time(token, chat)
-    elif act == "t" and arg and d.get("step") == "time":
+    elif act == "t" and arg and arg[0] == "goal" and d.get("step") == "time":
+        d["step"] = "goal"
+        _draft_put(con, uid, d)
+        _ask_goal(token, chat)
+    elif act == "t" and arg and arg[0].isdigit() and d.get("step") == "time":
+        d.pop("goal", None)
         d.update(dur=max(DUR_MIN, min(DUR_MAX, int(arg[0]))), step="subs")
         _draft_put(con, uid, d)
         _subs_screen(token, chat, d)
@@ -631,6 +803,8 @@ def on_callback(con, token, cb) -> bool:
         _subs_screen(token, chat, d)
     elif act == "pub":
         _publish(con, token, uid, chat, d, frm)
+    elif act == "fw" and d.get("step") == "offer":
+        _new(con, token, uid, chat, pre=d.get("pre"))
     return True
 
 
@@ -658,8 +832,14 @@ def _owner_action(con, token, cb, uid, chat, act, gid) -> None:
         g["done_ts"] = int(H.now())
         _save(con, g)
     _answer(token, cb, "Отменила.")
+    note = "\n\n❌ Розыгрыш отменён организатором."
+    if g.get("media_post"):                   # пост с картинкой — правится подпись, а не текст
+        _api(token, "editMessageCaption", chat_id=g["chat"]["id"], message_id=g.get("msg"),
+             caption=(post_text(g)[:CAPTION_MAX - len(note)] + note),
+             reply_markup=json.dumps(_post_kb(g), ensure_ascii=False))
+        return
     _api(token, "editMessageText", chat_id=g["chat"]["id"], message_id=g.get("msg"),
-         text=(post_text(g) + "\n\n❌ Розыгрыш отменён организатором.")[:4096],
+         text=(post_text(g) + note)[:4096],
          reply_markup=json.dumps(_post_kb(g), ensure_ascii=False))
 
 
@@ -721,6 +901,8 @@ def _close(con, token, gid) -> None:
     if g.get("round_moved_from"):
         moved = (f"\nРаунд перенесён с №{g['round_moved_from']}: приём закрыт "
                  + ("раньше срока." if g.get("closed_early") else "позже срока, старый раунд мог уже выйти."))
+        if g.get("goal_hit"):
+            moved = f"\nНабралось {g['goal']} участников — приём закрыт, раунд назначен сейчас."
     ex = f" Не выполнили условие: {len(g['excluded'])} — они в списке не участвуют." if g.get("excluded") else ""
     r = _send(token, g["chat"]["id"],
               f"⏳ Приём закрыт: «{g['prize']}». Участвуют: {g['eligible']}.{ex}\n"
@@ -872,6 +1054,8 @@ def merge(cur_raw, inc_raw):
     cur["end"] = min(int(cur["end"]), int(inc["end"]))
     if inc.get("closed_early"):
         cur["closed_early"] = 1
+    if inc.get("goal_hit"):
+        cur["goal_hit"] = 1
     return json.dumps(cur, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -939,7 +1123,7 @@ def public(g: dict) -> dict:
     """Что видит кто угодно: без tg id; имена участников — замаскированы, победителей — как в посте."""
     entries = g.get("entries") or []
     by_n = {e[0]: e for e in entries}
-    out = {k: g.get(k) for k in ("id", "prize", "k", "created", "end", "state", "round", "round_moved_from",
+    out = {k: g.get(k) for k in ("id", "prize", "k", "goal", "goal_hit", "created", "end", "state", "round", "round_moved_from",
                                  "closed_ts", "close_msg_date", "digest", "randomness", "signature", "seed",
                                  "excluded", "eligible", "done_ts")}
     out.update(scheme=core.SCHEME, chain=core.DRAND_CHAIN, round_time=core.round_time(g["round"]),
