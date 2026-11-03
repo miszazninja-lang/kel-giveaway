@@ -327,7 +327,8 @@ def _post_kb(g: dict, n=None) -> dict:
     n = len(g.get("entries") or []) if n is None else n
     st = g.get("state")
     if st == "open":
-        return {"inline_keyboard": [[_url(f"🎁 Участвовать ({n})", _join_url(g["id"]))],
+        # зелёная кнопка (style, Bot API 9.4, 03.11.2026)
+        return {"inline_keyboard": [[{**_url(f"🎁 Участвовать ({n})", _join_url(g["id"])), "style": "success"}],
                                     [_url("🔍 Проверить честность", _verify_url(g["id"]))]]}
     if st in ("closing", "closed"):
         return {"inline_keyboard": [[_url(f"⏳ Приём закрыт · участников {n}", _verify_url(g["id"]))]]}
@@ -589,6 +590,85 @@ def _prize_fields(text):
     return {"prize": re.sub(r"\s+", " ", body)[:PRIZE_MAX]}, ""
 
 
+# Призовые места (владелец 03.11.2026 переслал чужие розыгрыши: «Призовые места: 1 Место - (S) Со Сон Ын,
+# 2 Место - (А) Агнес Тахеон, … 6 Место - (D) Хён Джин Со, (F) Огури Кэп»). Перечислены в тексте места 1…N — в итогах
+# у каждого победителя его место и приз. Место = порядковый номер в уже вытянутом порядке draw_order: жеребьёвка та
+# же, места только подписывают её итог. Разбор не удался или мест меньше, чем победителей, — итоги как раньше.
+PLACES_MAX = WIN_MAX
+PLACE_PRIZE_MAX = 120
+_PLACE_RE = re.compile(r"(?<!\w)(?:(\d{1,3})\s*(?:-?\s*(?:е|ое|ой|ый|й))?\s*место|место\s*№?\s*(\d{1,3}))(?!\w)"
+                       r"\s*[—–\-:=.)]*\s*", re.I)
+_PLACE_NUM_RE = re.compile(r"(\d{1,3})(?:\ufe0f?\u20e3\s*|\s*[.)]\s+|\s*[—–-]\s*)(\S.*)")   # «1. …», «1) …», «1️⃣ …»
+_PLACE_HEAD_RE = re.compile(r"приз|мест|наград", re.I)
+_MEDALS = {"🥇": 1, "🥈": 2, "🥉": 3}
+
+
+def parse_places(text) -> list:
+    """Призы по местам из текста розыгрыша → [приз 1 места, приз 2 места, …]; [] — мест нет или разбор не удался.
+    Понимает «1 место — …», «1-е Место - …», «Место 1: …» (и несколько мест в одной строке через запятую), «🥇 …»;
+    «1. …», «1) …», «1️⃣ …» — только списком сразу под строкой со словом «приз», «мест» или «наград»
+    (иначе это просто нумерованные условия). Места должны идти без пропусков с 1, каждое — один раз."""
+    found, bad, block = {}, [], False
+
+    def put(n, prize):
+        prize = re.sub(r"\s+", " ", str(prize or "")).strip(" \t,;—–-:")
+        if not prize or not 1 <= n <= PLACES_MAX or n in found:
+            bad.append(n)
+            return
+        found[n] = prize[:PLACE_PRIZE_MAX]
+
+    for row in str(text or "").replace("\r", "").split("\n"):
+        s = row.strip()
+        if not s:
+            continue
+        medal = _MEDALS.get(s[:1]) if s[1:2] not in _MEDALS else None
+        if medal:
+            s = s[1:].strip()
+        ms = list(_PLACE_RE.finditer(s))
+        if ms and (ms[0].start() == 0 or s[:ms[0].start()].rstrip()[-1:] in (":", "—", "–", "-")):
+            for i, m in enumerate(ms):
+                put(int(m.group(1) or m.group(2)), s[m.end():ms[i + 1].start() if i + 1 < len(ms) else len(s)])
+            continue
+        if medal:
+            put(medal, s)
+            continue
+        m = _PLACE_NUM_RE.fullmatch(s)
+        if block and m:
+            put(int(m.group(1)), m.group(2))
+            continue
+        block = bool(_PLACE_HEAD_RE.search(s))
+    if bad or not found or sorted(found) != list(range(1, len(found) + 1)):
+        return []
+    return [found[i] for i in range(1, len(found) + 1)]
+
+
+def places_of(g: dict) -> list:
+    """Призы по местам для итогов розыгрыша (или черновика); [] — как раньше: мест нет, не разобрались или их меньше,
+    чем победителей."""
+    pl = parse_places(g.get("desc") or g.get("prize") or "")
+    return pl if pl and len(pl) >= int(g.get("k") or 1) else []
+
+
+def _plural(n: int, one: str, few: str, many: str) -> str:
+    a, b = n % 10, n % 100
+    return one if a == 1 and b != 11 else few if 2 <= a <= 4 and not 12 <= b <= 14 else many
+
+
+def _places_note(d: dict) -> str:
+    """Строка предпросмотра: места распознаны («Нашла 7 призовых мест») — или почему в итогах их не будет."""
+    pl = parse_places(d.get("desc") or d.get("prize") or "")
+    if not pl:
+        return ""
+    n, k = len(pl), int(d.get("k") or 1)
+    head = f"🏅 Нашла {n} {_plural(n, 'призовое место', 'призовых места', 'призовых мест')}"
+    if n < k:
+        return head + (f", а победителей {k} — места в итогах не покажу. Перечисли все {k} или поменяй число "
+                       "победителей.")
+    if n > k:
+        return head + f", а победителей {k} — места с {k + 1}-го не разыграются."
+    return head + " — в итогах у каждого победителя будут его место и приз."
+
+
 def _take_prize(con, token, uid, chat, d, text: str) -> None:
     f, err = _prize_fields(text)
     if not f:
@@ -628,6 +708,9 @@ def _confirm(con, token, uid, chat, d) -> None:
                               [_btn("🔒 Сделать частным" if pub else "🌍 Сделать публичным", "pv")]]}
     vis = ("🌍 Публичный: его увидят все, кто пишет мне, в списке идущих розыгрышей." if pub else
            "🔒 Частный: только в твоём чате и по ссылке.")
+    note = _places_note(d)                     # 03.11.2026: видно, что призовые места распознаны
+    if note:
+        vis += "\n" + note
     if d.get("media"):
         long_ = len(post_text(fake)) > CAPTION_MAX
         _send(token, chat, vis + "\nТак будет выглядеть пост 👇" + (
@@ -1187,8 +1270,13 @@ def _announce(con, token, gid) -> None:
         return
     by_n = {e[0]: e for e in g["entries"]}
     esc = html.escape
+    places = places_of(g)                  # 03.11.2026: призовые места — подпись к тому же порядку draw_order
     lines = [f"🏆 Итоги розыгрыша «{esc(g['prize'])}»", ""]
-    lines += [f"{i}. {_mention(by_n[n])} — билет №{n}" for i, n in enumerate(g["winners"], 1)]
+    if places:
+        lines += [f"{i} место — {_mention(by_n[n])} — {esc(places[i - 1])} (билет №{n})"
+                  for i, n in enumerate(g["winners"], 1)]
+    else:
+        lines += [f"{i}. {_mention(by_n[n])} — билет №{n}" for i, n in enumerate(g["winners"], 1)]
     lines += ["", f"Участвовали: {g.get('eligible', len(g['entries']))}."]
     lines.append(f"🔒 Число drand раунда №{g['round']}: {g['randomness'][:16]}… — пересчитать итог может любой.")
     ok = _send_lines(token, g["chat"]["id"], lines,
@@ -1204,8 +1292,9 @@ def _announce(con, token, gid) -> None:
             if g["ann_tries"] > 200:                     # дальше не долбим Telegram: итог есть на странице
                 g["ann"] = -1
         _save(con, g)
-    who = [f"{i}. {_mention(by_n[n])}" + (f" (@{esc(by_n[n][5])})" if len(by_n[n]) > 5 and by_n[n][5] else "")
-           + f" — билет №{n}" for i, n in enumerate(g["winners"], 1)]
+    who = [(f"{i} место — " if places else f"{i}. ") + _mention(by_n[n])
+           + (f" (@{esc(by_n[n][5])})" if len(by_n[n]) > 5 and by_n[n][5] else "")
+           + (f" — {esc(places[i - 1])}" if places else "") + f" — билет №{n}" for i, n in enumerate(g["winners"], 1)]
     if not ok:
         if g.get("ann_tries") == 3:
             _send_lines(token, g["owner"], [f"Не могу опубликовать итоги «{esc(g['prize'])}» в "
@@ -1213,9 +1302,10 @@ def _announce(con, token, gid) -> None:
         return
     _edit_post(token, g)
     org = f" Организатор: @{g['owner_user']}." if g.get("owner_user") else " Организатор свяжется с тобой."
-    for n in g["winners"]:
+    for i, n in enumerate(g["winners"], 1):
+        place = f" Твоё место: {i} — {places[i - 1]}." if places else ""
         _send(token, by_n[n][2], f"🎉 Ты выиграл в розыгрыше «{g['prize']}» ({_chat_name(g['chat'])})! "
-                                 f"Билет №{n}.{org}",
+                                 f"Билет №{n}.{place}{org}",
               {"inline_keyboard": [[_url("🔍 Итог и проверка", _verify_url(g["id"]))]]})
     _send_lines(token, g["owner"], [f"🏆 Итоги «{esc(g['prize'])}»:"] + (who or ["победителей нет"])
                 + ["", "Напиши победителям и передай приз. Имя — ссылка на профиль."])
@@ -1337,7 +1427,8 @@ def public(g: dict) -> dict:
                n=len(entries), entries=[[e[0], e[1], _mask(e[3])] for e in entries],
                list=g.get("list"), source=H.source_url,
                winners=[[n, by_n[n][1], by_n[n][3] if not g.get("compact") else _mask(by_n[n][3])]
-                        for n in g.get("winners") or [] if n in by_n])
+                        for n in g.get("winners") or [] if n in by_n],
+               places=places_of(g))           # 03.11.2026: приз i-го места — i-му победителю по порядку
     return out
 
 
@@ -1611,6 +1702,8 @@ def _app_photo(con, token, uid, body) -> dict:
 
 # ---------- страница розыгрышей: идущие публичные и свои, шанс, таймер, билет одной кнопкой ----------
 MINE_DONE_SHOW = 3 * 86400   # закончившиеся «мои» — ещё столько видно на странице (выиграл или нет)
+FEED_DONE_SHOW = 3 * 86400   # 03.11.2026: вкладка «Розыгрыши» — недавно завершённые публичные в «Ленте» под идущими
+FEED_DONE_MAX = 20
 IMG_MAX = 3 * 1024 * 1024
 _IMG: dict = {}              # gid -> (когда, mime, байты): картинка приза для страницы
 
@@ -1621,6 +1714,8 @@ def _app_item(g, uid) -> dict:
     mine = next((e for e in entries if e[2] == uid), None)
     n, k = len(entries), int(g.get("k") or 1)
     media = g.get("media") if isinstance(g.get("media"), dict) else {}
+    ws = (g.get("winners") or []) if g.get("state") == "done" else []
+    places = places_of(g) if mine and mine[0] in ws else []
     chat = g.get("chat") or {}
     return {"id": g["id"], "prize": g["prize"], "chat": _chat_name(chat),
             "chat_url": f"https://t.me/{chat['username']}" if chat.get("username") else "",
@@ -1628,22 +1723,30 @@ def _app_item(g, uid) -> dict:
             "state": g.get("state"), "img": f"/give/img/{g['id']}" if media.get("t") == "photo" else "",
             "mine": [mine[0], mine[1]] if mine else None,
             "won": (mine[0] in (g.get("winners") or [])) if mine and g.get("state") == "done" else None,
+            "place": [ws.index(mine[0]) + 1, places[ws.index(mine[0])]] if places else None,   # 03.11.2026
             "chance": min(1.0, k / max(1, n if mine else n + 1)),
             "subs": [_chat_name(s) for s in g.get("subs") or []], "verify": _verify_url(g["id"]),
             "own": g.get("owner") == uid, "pub": g.get("pub") is True and not g.get("hidden")}
 
 
-def _app_list(con, uid) -> dict:
+def _app_list(con, uid, feed=False) -> dict:
+    """Идущие публичные (listed) и свои — для /gives. feed — для вкладки «Розыгрыши» главного мини-приложения
+    (03.11.2026, владелец: «здесь должны быть публичные и те, в которых ты принимаешь участие»): под идущими ещё и
+    недавно завершённые публичные (feed, «смотри итоги»). Видимость та же: чужие частные и скрытые — только свои."""
     now = H.now()
     allg = _all(con)
     pub = sorted((g for g in allg if g.get("state") == "open" and now < float(g.get("end") or 0)
                   and g.get("pub") is True and not g.get("hidden")), key=lambda g: g["end"])[:50]
-    seen = {g["id"] for g in pub}
+    done = sorted((g for g in allg if feed and g.get("state") == "done" and g.get("pub") is True and not g.get("hidden")
+                   and now - float(g.get("done_ts") or 0) < FEED_DONE_SHOW),
+                  key=lambda g: -float(g.get("done_ts") or 0))[:FEED_DONE_MAX]
+    seen = {g["id"] for g in pub + done}
     mine = [g for g in sorted(allg, key=lambda x: -float(x.get("created") or 0)) if g["id"] not in seen
             and (g.get("owner") == uid or any(e[2] == uid for e in g.get("entries") or []))
             and (g.get("state") in ("open", "closing", "closed")
                  or (g.get("state") == "done" and now - float(g.get("done_ts") or now) < MINE_DONE_SHOW))][:30]
     return {"ok": True, "now": int(now), "items": [dict(_app_item(g, uid), listed=True) for g in pub]
+            + [dict(_app_item(g, uid), listed=False, feed=True) for g in done]
             + [dict(_app_item(g, uid), listed=False) for g in mine], "form": bool(_app_url())}
 
 
@@ -1729,7 +1832,7 @@ def http_post(con, token, path: str, body):
     if act == "photo":
         return 200, _app_photo(con, token, uid, body)
     if act == "list":
-        return 200, _app_list(con, uid)
+        return 200, _app_list(con, uid, feed=bool(body.get("feed")))
     if act == "join":
         return 200, _app_join(con, token, user, body)
     with _LOCK:

@@ -185,8 +185,11 @@ details summary{cursor:pointer;color:var(--acc);margin:4px 0}
     var ws = d.state === "done" ? d.winners : [];
     $("wintitle").textContent = ws.length > 1 ? "🏆 Победители" : "🏆 Победитель";
     if (d.state === "done") {
-      $("winners").innerHTML = ws.length ? ws.map(function (w) {
-        return "<li>" + esc(w[2]) + "<small>билет №" + w[0] + " · код " + esc(w[1]) + "</small></li>"; }).join("")
+      // 03.11.2026: призовые места из текста розыгрыша — i-й приз у i-го победителя по порядку жеребьёвки
+      $("winners").innerHTML = ws.length ? ws.map(function (w, i) {
+        var pl = (d.places || [])[i];
+        return "<li>" + (pl ? (i + 1) + " место — " : "") + esc(w[2]) + "<small>" + (pl ? esc(pl) + " · " : "") +
+          "билет №" + w[0] + " · код " + esc(w[1]) + "</small></li>"; }).join("")
         : "<li class='mute' style='font-size:15px;font-weight:400'>победителей нет</li>";
     }
     var p = pool();
